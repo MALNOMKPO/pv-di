@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>PV 다이어그램 열역학 과정 시뮬레이션</title>
+  <style>
+    body {
+      font-family: 'Malgun Gothic', sans-serif;
+      margin: 20px;
+      background: #f5f5f5;
+    }
+    h2 {
+      text-align: center;
+      color: #333;
+    }
+    #container {
+      display: flex;
+      justify-content: space-around;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .panel {
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      margin: 10px;
+    }
+    canvas {
+      border: 1px solid #999;
+      background: #fafafa;
+      cursor: crosshair;
+    }
+    .info {
+      background: #e3f2fd;
+      padding: 10px;
+      border-radius: 5px;
+      margin-top: 10px;
+      font-size: 14px;
+      text-align: center;
+      font-weight: bold;
+    }
+    .legend {
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .legend div {
+      margin: 5px 0;
+    }
+    .color-box {
+      display: inline-block;
+      width: 15px;
+      height: 15px;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <h2>PV 다이어그램</h2>
+  
+  <div id="container">
+    <!-- 왼쪽: PV 다이어그램 -->
+    <div class="panel">
+      <h3>PV 다이어그램</h3>
+      <canvas id="pvCanvas" width="600" height="500"></canvas>
+      <div class="legend">
+        <div><span class="color-box" style="background: #1976d2;"></span>등온 과정 (PV=const)</div>
+        <div><span class="color-box" style="background: #d32f2f;"></span>등압 과정 (P=const)</div>
+        <div><span class="color-box" style="background: #ffd700;"></span>등적 과정 (V=const)</div>
+        <div><span class="color-box" style="background: #000;"></span>단열 과정 (Q=0)</div>
+      </div>
+      <div class="info">
+        <div style="margin-top: 8px;">
+          ● 검은점: 초기 상태 | ● 노란점: 최종 상태
+        </div>
+      </div>
+    </div>
+
+    <!-- 오른쪽: 피스톤 모델 + 열역학 제1법칙 -->
+    <div class="panel">
+      <h3>피스톤 모델 & 열역학 제1법칙</h3>
+      <canvas id="pistonCanvas" width="400" height="350"></canvas>
+      <div class="info" style="margin-top: 20px;">
+        <div style="font-weight: bold; margin-bottom: 12px;">열역학 제1법칙: Q = ΔU + W</div>
+        <canvas id="thermoCanvas" width="380" height="160"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 상수
+    const R = 0.0821;
+    const n = 1.0;
+    const gamma = 1.4;
+
+    // 상태 변수
+    let state1 = { P: 5.0, V: 5.0 };
+    let state2 = { P: 2.5, V: 6.6 };
+    let selectedPoint = 2;
+
+    const pvCanvas = document.getElementById('pvCanvas');
+    const pvCtx = pvCanvas.getContext('2d');
+    const pistonCanvas = document.getElementById('pistonCanvas');
+    const pistonCtx = pistonCanvas.getContext('2d');
+    const thermoCanvas = document.getElementById('thermoCanvas');
+    const thermoCtx = thermoCanvas.getContext('2d');
+
+    // 그래프 범위
+    const graphLeft = 70;
+    const graphRight = 580;
+    const graphTop = 40;
+    const graphBottom = 460;
+    const graphWidth = graphRight - graphLeft;
+    const graphHeight = graphBottom - graphTop;
+
+    const minV = 0.5;
+    const maxV = 10.0;
+    const minP = 0.3;
+    const maxP = 10.0;
+
+    let isDragging = false;
+    let thermoData = { Q: 0, dU: 0, W: 0 };
+
+    // 좌표 변환
+    function pvToScreen(p, v) {
+      let x = graphLeft + ((v - minV) / (maxV - minV)) * graphWidth;
+      let y = graphBottom - ((p - minP) / (maxP - minP)) * graphHeight;
+      return { x, y };
+    }
+
+    function screenToPV(x, y) {
+      let v = minV + ((x - graphLeft) / graphWidth) * (maxV - minV);
+      let p = minP + ((graphBottom - y) / graphHeight) * (maxP - minP);
+      v = Math.max(minV, Math.min(maxV, v));
+      p = Math.max(minP, Math.min(maxP, p));
+      return { p: parseFloat(p.toFixed(2)), v: parseFloat(v.toFixed(2)) };
+    }
+
+    // 온도 계산
+    function calcTemp(P, V) {
+      return (P * V) / (n * R);
+    }
+
+    // 과정 판별
+    function determineProcess(P1, V1, P2, V2) {
+      const T1 = calcTemp(P1, V1);
+      const T2 = calcTemp(P2, V2);
+      
+      if (Math.abs(P2 - P1) < 0.01 && Math.abs(V2 - V1) < 0.01) {
+        return '없음';
+      }
+      
+      if (Math.abs(V2 - V1) < 0.12) {
+        return '정적 과정';
+      }
+      
+      if (Math.abs(P2 - P1) < 0.12) {
+        return '등압 과정';
+      }
+      
+      if (Math.abs(T2 - T1) < 0.08 * Math.max(T1, T2)) {
+        return '등온 과정';
+      }
+      
+      const logValue1 = Math.log(P1) + gamma * Math.log(V1);
+      const logValue2 = Math.log(P2) + gamma * Math.log(V2);
+      const logDiff = Math.abs(logValue2 - logValue1);
+      
+      if (logDiff < 0.15) {
+        return '단열 과정';
+      }
+      
+      return '복합 과정';
+    }
+
+    // PV 다이어그램 그리기
+    function drawPVDiagram() {
+      pvCtx.clearRect(0, 0, pvCanvas.width, pvCanvas.height);
+
+      // 축
+      pvCtx.strokeStyle = '#333';
+      pvCtx.lineWidth = 2.5;
+      pvCtx.beginPath();
+      pvCtx.moveTo(graphLeft, graphTop);
+      pvCtx.lineTo(graphLeft, graphBottom);
+      pvCtx.lineTo(graphRight, graphBottom);
+      pvCtx.stroke();
+
+      // 축 레이블
+      pvCtx.fillStyle = '#333';
+      pvCtx.font = 'bold 16px sans-serif';
+      pvCtx.textAlign = 'center';
+      pvCtx.fillText('부피 V (L)', (graphLeft + graphRight) / 2, pvCanvas.height - 10);
+      
+      pvCtx.save();
+      pvCtx.translate(15, (graphTop + graphBottom) / 2);
+      pvCtx.rotate(-Math.PI / 2);
+      pvCtx.textAlign = 'center';
+      pvCtx.fillText('압력 P ', 0, 0);
+      pvCtx.restore();
+
+      // 격자
+      pvCtx.strokeStyle = '#e8e8e8';
+      pvCtx.lineWidth = 0.8;
+      pvCtx.fillStyle = '#666';
+      pvCtx.font = '12px sans-serif';
+      pvCtx.textAlign = 'center';
+
+      for (let v = 1; v <= 10; v += 1) {
+        let coords = pvToScreen(minP, v);
+        pvCtx.beginPath();
+        pvCtx.moveTo(coords.x, graphTop);
+        pvCtx.lineTo(coords.x, graphBottom);
+        pvCtx.stroke();
+        pvCtx.fillText(v.toString(), coords.x, graphBottom + 20);
+      }
+
+      pvCtx.textAlign = 'right';
+      for (let p = 1; p <= 10; p += 1) {
+        let coords = pvToScreen(p, minV);
+        pvCtx.beginPath();
+        pvCtx.moveTo(graphLeft, coords.y);
+        pvCtx.lineTo(graphRight, coords.y);
+        pvCtx.stroke();
+        pvCtx.fillText(p.toString(), graphLeft - 10, coords.y + 4);
+      }
+
+      // 클리핑 영역 설정
+      pvCtx.save();
+      pvCtx.beginPath();
+      pvCtx.rect(graphLeft, graphTop, graphWidth, graphHeight);
+      pvCtx.clip();
+
+      // 과정 판별
+      let processType = determineProcess(state1.P, state1.V, state2.P, state2.V);
+      
+      let coords1 = pvToScreen(state1.P, state1.V);
+      let coords2 = pvToScreen(state2.P, state2.V);
+      
+      // ===== 과정 곡선 아래 영역을 노란색으로 칠하기 (한일) =====
+      pvCtx.fillStyle = 'rgba(255, 255, 0, 0.3)';
+      pvCtx.beginPath();
+      
+      if (processType === '등온 과정') {
+        // 등온선 아래 영역
+        let minVol = Math.min(state1.V, state2.V);
+        let maxVol = Math.max(state1.V, state2.V);
+        let T = calcTemp(state1.P, state1.V);
+        
+        pvCtx.moveTo(pvToScreen(minP, minVol).x, graphBottom);
+        for (let v = minVol; v <= maxVol; v += 0.05) {
+          let p = (n * R * T) / v;
+          if (p >= minP && p <= maxP) {
+            let coords = pvToScreen(p, v);
+            pvCtx.lineTo(coords.x, coords.y);
+          }
+        }
+        pvCtx.lineTo(pvToScreen(minP, maxVol).x, graphBottom);
+      } 
+      else if (processType === '등압 과정') {
+        // 등압선 아래 영역
+        let minV_val = Math.min(state1.V, state2.V);
+        let maxV_val = Math.max(state1.V, state2.V);
+        let P = state1.P;
+        
+        pvCtx.moveTo(pvToScreen(minP, minV_val).x, graphBottom);
+        pvCtx.lineTo(pvToScreen(P, minV_val).x, pvToScreen(P, minV_val).y);
+        pvCtx.lineTo(pvToScreen(P, maxV_val).x, pvToScreen(P, maxV_val).y);
+        pvCtx.lineTo(pvToScreen(minP, maxV_val).x, graphBottom);
+      } 
+      else if (processType === '정적 과정') {
+        // 등적선 아래 영역 (V 일정이므로 수직선)
+        let V = state1.V;
+        let minP_val = Math.min(state1.P, state2.P);
+        let maxP_val = Math.max(state1.P, state2.P);
+        
+        pvCtx.moveTo(pvToScreen(minP_val, V).x, graphBottom);
+        pvCtx.lineTo(pvToScreen(maxP_val, V).x, pvToScreen(maxP_val, V).y);
+        pvCtx.lineTo(pvToScreen(minP_val, V).x, pvToScreen(minP_val, V).y);
+      } 
+      else if (processType === '단열 과정') {
+        // 단열선 아래 영역
+        let PVGamma = state1.P * Math.pow(state1.V, gamma);
+        let minVol = Math.min(state1.V, state2.V);
+        let maxVol = Math.max(state1.V, state2.V);
+        
+        pvCtx.moveTo(pvToScreen(minP, minVol).x, graphBottom);
+        for (let v = minVol; v <= maxVol; v += 0.03) {
+          let p = PVGamma / Math.pow(v, gamma);
+          if (p >= minP && p <= maxP) {
+            let coords = pvToScreen(p, v);
+            pvCtx.lineTo(coords.x, coords.y);
+          }
+        }
+        pvCtx.lineTo(pvToScreen(minP, maxVol).x, graphBottom);
+      }
+      
+      pvCtx.fill();
+      
+      // 초기점의 등온선 (파란색 점선 곡선)
+      let T1 = calcTemp(state1.P, state1.V);
+      pvCtx.strokeStyle = '#1976d2';
+      pvCtx.lineWidth = 2;
+      pvCtx.setLineDash([5, 5]);
+      pvCtx.beginPath();
+      let isFirst = true;
+      for (let v = minV; v <= maxV; v += 0.05) {
+        let p = (n * R * T1) / v;
+        if (p >= minP && p <= maxP) {
+          let coords = pvToScreen(p, v);
+          if (isFirst) {
+            pvCtx.moveTo(coords.x, coords.y);
+            isFirst = false;
+          } else {
+            pvCtx.lineTo(coords.x, coords.y);
+          }
+        }
+      }
+      pvCtx.stroke();
+      
+      // 최종점의 등온선 (파란색 점선 곡선)
+      let T2 = calcTemp(state2.P, state2.V);
+      pvCtx.strokeStyle = '#1976d2';
+      pvCtx.beginPath();
+      isFirst = true;
+      for (let v = minV; v <= maxV; v += 0.05) {
+        let p = (n * R * T2) / v;
+        if (p >= minP && p <= maxP) {
+          let coords = pvToScreen(p, v);
+          if (isFirst) {
+            pvCtx.moveTo(coords.x, coords.y);
+            isFirst = false;
+          } else {
+            pvCtx.lineTo(coords.x, coords.y);
+          }
+        }
+      }
+      pvCtx.stroke();
+
+      // 초기점의 단열선 (빨간색 점선 곡선)
+      pvCtx.strokeStyle = '#d32f2f';
+      pvCtx.lineWidth = 2;
+      pvCtx.beginPath();
+      let PVGamma1 = state1.P * Math.pow(state1.V, gamma);
+      isFirst = true;
+      for (let v = minV; v <= maxV; v += 0.05) {
+        let p = PVGamma1 / Math.pow(v, gamma);
+        if (p >= minP && p <= maxP) {
+          let coords = pvToScreen(p, v);
+          if (isFirst) {
+            pvCtx.moveTo(coords.x, coords.y);
+            isFirst = false;
+          } else {
+            pvCtx.lineTo(coords.x, coords.y);
+          }
+        }
+      }
+      pvCtx.stroke();
+
+      // 최종점의 단열선 (빨간색 점선 곡선)
+      pvCtx.strokeStyle = '#d32f2f';
+      pvCtx.beginPath();
+      let PVGamma2 = state2.P * Math.pow(state2.V, gamma);
+      isFirst = true;
+      for (let v = minV; v <= maxV; v += 0.05) {
+        let p = PVGamma2 / Math.pow(v, gamma);
+        if (p >= minP && p <= maxP) {
+          let coords = pvToScreen(p, v);
+          if (isFirst) {
+            pvCtx.moveTo(coords.x, coords.y);
+            isFirst = false;
+          } else {
+            pvCtx.lineTo(coords.x, coords.y);
+          }
+        }
+      }
+      pvCtx.stroke();
+
+      pvCtx.setLineDash([]);
+
+      // 과정 곡선 (검은색 또는 기타)
+      pvCtx.lineWidth = 4;
+      
+      if (processType === '등온 과정') {
+        pvCtx.strokeStyle = '#1976d2';
+        pvCtx.beginPath();
+        let isFirst = true;
+        let minVol = Math.min(state1.V, state2.V);
+        let maxVol = Math.max(state1.V, state2.V);
+        for (let v = minVol; v <= maxVol; v += 0.05) {
+          let p = (n * R * calcTemp(state1.P, state1.V)) / v;
+          if (p >= minP && p <= maxP) {
+            let coords = pvToScreen(p, v);
+            if (isFirst) {
+              pvCtx.moveTo(coords.x, coords.y);
+              isFirst = false;
+            } else {
+              pvCtx.lineTo(coords.x, coords.y);
+            }
+          }
+        }
+        pvCtx.stroke();
+      } 
+      else if (processType === '등압 과정') {
+        pvCtx.strokeStyle = '#d32f2f';
+        pvCtx.beginPath();
+        pvCtx.moveTo(coords1.x, coords1.y);
+        pvCtx.lineTo(coords2.x, coords2.y);
+        pvCtx.stroke();
+      } 
+      else if (processType === '정적 과정') {
+        pvCtx.strokeStyle = '#ffd700';
+        pvCtx.beginPath();
+        pvCtx.moveTo(coords1.x, coords1.y);
+        pvCtx.lineTo(coords2.x, coords2.y);
+        pvCtx.stroke();
+      } 
+      else if (processType === '단열 과정') {
+        pvCtx.strokeStyle = '#000';
+        pvCtx.lineWidth = 4;
+        pvCtx.beginPath();
+        
+        let PVGamma = state1.P * Math.pow(state1.V, gamma);
+        let minVol = Math.min(state1.V, state2.V);
+        let maxVol = Math.max(state1.V, state2.V);
+        let isFirst = true;
+        
+        for (let v = minVol; v <= maxVol; v += 0.03) {
+          let p = PVGamma / Math.pow(v, gamma);
+          if (p >= minP && p <= maxP) {
+            let coords = pvToScreen(p, v);
+            if (isFirst) {
+              pvCtx.moveTo(coords.x, coords.y);
+              isFirst = false;
+            } else {
+              pvCtx.lineTo(coords.x, coords.y);
+            }
+          }
+        }
+        pvCtx.stroke();
+      }
+
+      pvCtx.restore();
+
+      // 초기점
+      pvCtx.fillStyle = '#000';
+      pvCtx.beginPath();
+      pvCtx.arc(coords1.x, coords1.y, 10, 0, 2 * Math.PI);
+      pvCtx.fill();
+      pvCtx.strokeStyle = '#fff';
+      pvCtx.lineWidth = 2.5;
+      pvCtx.stroke();
+
+      // 최종점
+      pvCtx.fillStyle = '#FFD700';
+      pvCtx.beginPath();
+      pvCtx.arc(coords2.x, coords2.y, 10, 0, 2 * Math.PI);
+      pvCtx.fill();
+      pvCtx.strokeStyle = '#000';
+      pvCtx.lineWidth = 2.5;
+      pvCtx.stroke();
+    }
+
+    // 피스톤 모델
+    function drawPiston(P, V, processType) {
+      pistonCtx.clearRect(0, 0, pistonCanvas.width, pistonCanvas.height);
+
+      pistonCtx.strokeStyle = '#555';
+      pistonCtx.lineWidth = 4;
+      pistonCtx.strokeRect(120, 80, 160, 200);
+
+      let pistonY = 280 - (V - 0.5) * 22;
+
+      let gasAlpha = Math.min(P / 10.0, 1.0);
+      pistonCtx.fillStyle = `rgba(100, 180, 255, ${gasAlpha})`;
+      pistonCtx.fillRect(120, pistonY, 160, 280 - pistonY);
+
+      pistonCtx.fillStyle = '#FFD700';
+      pistonCtx.fillRect(115, pistonY - 12, 170, 24);
+      pistonCtx.strokeStyle = '#333';
+      pistonCtx.lineWidth = 2;
+      pistonCtx.strokeRect(115, pistonY - 12, 170, 24);
+
+      pistonCtx.strokeStyle = '#666';
+      pistonCtx.lineWidth = 3;
+      pistonCtx.beginPath();
+      pistonCtx.moveTo(200, pistonY - 12);
+      pistonCtx.lineTo(200, 40);
+      pistonCtx.stroke();
+
+      pistonCtx.font = 'bold 14px sans-serif';
+      
+      if (processType === '등온 과정') {
+        pistonCtx.fillStyle = '#d32f2f';
+        pistonCtx.fillText('Q', 60, 140);
+        pistonCtx.fillStyle = '#388e3c';
+        pistonCtx.fillText('W', 200, 25);
+      } 
+      else if (processType === '등압 과정') {
+        pistonCtx.fillStyle = '#d32f2f';
+        pistonCtx.fillText('Q', 60, 140);
+        pistonCtx.fillStyle = '#388e3c';
+        pistonCtx.fillText('W', 200, 25);
+      } 
+      else if (processType === '정적 과정') {
+        pistonCtx.fillStyle = '#1976d2';
+        pistonCtx.fillText('ΔU', 280, 160);
+      } 
+      else if (processType === '단열 과정') {
+        pistonCtx.fillStyle = '#7b1fa2';
+        pistonCtx.fillText('Q=0', 60, 120);
+        pistonCtx.fillStyle = '#388e3c';
+        pistonCtx.fillText('W', 200, 25);
+      }
+    }
+
+    // 열역학 막대 그래프
+    function drawThermoGraph(Q, dU, W) {
+      thermoCtx.clearRect(0, 0, thermoCanvas.width, thermoCanvas.height);
+
+      const barWidth = 50;
+      const barSpacing = 90;
+      const baseY = 110;
+
+      const maxVal = Math.max(Math.abs(Q), Math.abs(dU), Math.abs(W), 50);
+      const pixelScale = 70 / maxVal;
+
+      // Q 막대
+      const qHeight = Math.abs(Q) * pixelScale;
+      thermoCtx.fillStyle = Q >= 0 ? '#d32f2f' : '#ffcccc';
+      if (Q >= 0) {
+        thermoCtx.fillRect(30, baseY - qHeight, barWidth, qHeight);
+      } else {
+        thermoCtx.fillRect(30, baseY, barWidth, qHeight);
+      }
+      thermoCtx.strokeStyle = '#333';
+      thermoCtx.lineWidth = 2;
+      thermoCtx.strokeRect(30, Math.min(baseY - qHeight, baseY), barWidth, Math.max(qHeight, 1));
+      thermoCtx.fillStyle = '#333';
+      thermoCtx.font = 'bold 14px sans-serif';
+      thermoCtx.textAlign = 'center';
+      thermoCtx.fillText('Q', 55, baseY + 25);
+
+      // ΔU 막대
+      const duHeight = Math.abs(dU) * pixelScale;
+      thermoCtx.fillStyle = dU >= 0 ? '#388e3c' : '#c8e6c9';
+      if (dU >= 0) {
+        thermoCtx.fillRect(30 + barSpacing, baseY - duHeight, barWidth, duHeight);
+      } else {
+        thermoCtx.fillRect(30 + barSpacing, baseY, barWidth, duHeight);
+      }
+      thermoCtx.strokeStyle = '#333';
+      thermoCtx.lineWidth = 2;
+      thermoCtx.strokeRect(30 + barSpacing, Math.min(baseY - duHeight, baseY), barWidth, Math.max(duHeight, 1));
+      thermoCtx.fillStyle = '#333';
+      thermoCtx.fillText('ΔU', 55 + barSpacing, baseY + 25);
+
+      // W 막대
+      const wHeight = Math.abs(W) * pixelScale;
+      thermoCtx.fillStyle = W >= 0 ? '#1976d2' : '#bbdefb';
+      if (W >= 0) {
+        thermoCtx.fillRect(30 + barSpacing * 2, baseY - wHeight, barWidth, wHeight);
+      } else {
+        thermoCtx.fillRect(30 + barSpacing * 2, baseY, barWidth, wHeight);
+      }
+      thermoCtx.strokeStyle = '#333';
+      thermoCtx.lineWidth = 2;
+      thermoCtx.strokeRect(30 + barSpacing * 2, Math.min(baseY - wHeight, baseY), barWidth, Math.max(wHeight, 1));
+      thermoCtx.fillStyle = '#333';
+      thermoCtx.fillText('W', 55 + barSpacing * 2, baseY + 25);
+
+      // 기준선
+      thermoCtx.strokeStyle = '#999';
+      thermoCtx.lineWidth = 2;
+      thermoCtx.beginPath();
+      thermoCtx.moveTo(20, baseY);
+      thermoCtx.lineTo(360, baseY);
+      thermoCtx.stroke();
+    }
+
+    // 열역학 계산
+    function calcThermo() {
+      let T1 = calcTemp(state1.P, state1.V);
+      let T2 = calcTemp(state2.P, state2.V);
+      let processType = determineProcess(state1.P, state1.V, state2.P, state2.V);
+
+      let Q = 0, dU = 0, W = 0;
+      const Cv = 5/2 * R;
+
+      if (processType === '등온 과정') {
+        dU = 0;
+        W = n * R * T1 * Math.log(state2.V / state1.V) * 101.325;
+        Q = W;
+      } 
+      else if (processType === '등압 과정') {
+        W = state1.P * (state2.V - state1.V) * 101.325;
+        dU = n * Cv * (T2 - T1);
+        Q = dU + W;
+      } 
+      else if (processType === '정적 과정') {
+        W = 0;
+        dU = n * Cv * (T2 - T1);
+        Q = dU;
+      } 
+      else if (processType === '단열 과정') {
+        Q = 0;
+        dU = n * Cv * (T2 - T1);
+        W = -dU;
+      }
+      else if (processType === '복합 과정') {
+        dU = n * Cv * (T2 - T1);
+        W = state1.P * (state2.V - state1.V) * 101.325 * 0.5;
+        Q = dU + W;
+      }
+
+      thermoData = { Q, dU, W };
+    }
+
+    // 업데이트
+    function update() {
+      drawPVDiagram();
+      calcThermo();
+      let processType = determineProcess(state1.P, state1.V, state2.P, state2.V);
+      drawPiston(state2.P, state2.V, processType);
+      drawThermoGraph(thermoData.Q, thermoData.dU, thermoData.W);
+    }
+
+    // 마우스 이벤트
+    pvCanvas.addEventListener('mousedown', (e) => {
+      let rect = pvCanvas.getBoundingClientRect();
+      let x = e.clientX - rect.left;
+      let y = e.clientY - rect.top;
+
+      let coords1 = pvToScreen(state1.P, state1.V);
+      let coords2 = pvToScreen(state2.P, state2.V);
+
+      let dist1 = Math.hypot(x - coords1.x, y - coords1.y);
+      let dist2 = Math.hypot(x - coords2.x, y - coords2.y);
+
+      selectedPoint = (dist1 < dist2) ? 1 : 2;
+      isDragging = true;
+    });
+
+    pvCanvas.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+
+      let rect = pvCanvas.getBoundingClientRect();
+      let x = e.clientX - rect.left;
+      let y = e.clientY - rect.top;
+
+      let pv = screenToPV(x, y);
+      if (selectedPoint === 1) {
+        state1 = { P: pv.p, V: pv.v };
+      } else {
+        state2 = { P: pv.p, V: pv.v };
+      }
+      update();
+    });
+
+    pvCanvas.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+
+    pvCanvas.addEventListener('mouseleave', () => {
+      isDragging = false;
+    });
+
+    // 초기화
+    update();
+  </script>
+</body>
+</html>
